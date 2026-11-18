@@ -1,6 +1,6 @@
 # BareTest
 
-**BareTest** is a lightweight port of **Minetest 0.3.0** optimized to run bootleg handhelds running embedded Linux. Feel free to write port requests for your console in the issues tab!
+**BareTest** is a lightweight port of Minetest 0.3.0 optimized to run on bootleg handhelds running embedded Linux. Feel free to write port requests for your console in the issues tab!
 It uses a software renderer so it can even run on consoles without a gpu.
 It uses less than 32 mb of ram.
 
