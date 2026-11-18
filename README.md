@@ -6,7 +6,7 @@ It uses less than 32 mb of ram.
 
 ---
 
-## Controls & Key Mapping on the v90
+## Controls & Key Mappings on the v90
 
 All controls are fully configurable in `minetest.conf`.
 
@@ -31,7 +31,7 @@ For miyoo cfw:
 To clean build artifacts:
 
 ```bash
-./build.sh clean
+./build-miyoo.sh clean
 ```
 
 Or building for windows:
@@ -54,6 +54,6 @@ Then copy the resulting .exe and .dll to windows/bin.
 
 ## License
 
-- **BareTest**: Ported by me(Cucuzacu).
-- **Minetest-c55**: Copyright (C) 2010-2011 Perttu Ahola (celeron55).
+- BareTest: Ported by me(Cucuzacu).
+- Minetest-c55: Copyright (C) 2010-2011 Perttu Ahola (celeron55).
 - Licensed under GPL-2.0+. See source files + `old-README.txt` for complete licensing information.
