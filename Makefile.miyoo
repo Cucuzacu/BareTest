@@ -1,0 +1,162 @@
+PORT = miyoo
+DISTNAME = minetest-0.3.0-$(PORT)
+EXE_NAME = minetest
+
+CROSS_COMPILE ?= arm-miyoo-linux-uclibcgnueabi-
+CC = $(CROSS_COMPILE)gcc
+CXX = $(CROSS_COMPILE)g++
+AR = $(CROSS_COMPILE)ar
+STRIP = $(CROSS_COMPILE)strip
+
+ifeq ($(SYSROOT),)
+SYSROOT := $(shell $(CXX) -print-sysroot 2>/dev/null)
+endif
+
+PKG_CONFIG ?= $(SYSROOT)/../../usr/bin/pkg-config
+ifeq ($(wildcard $(PKG_CONFIG)),)
+PKG_CONFIG = $(SYSROOT)/usr/bin/pkg-config
+ifeq ($(wildcard $(PKG_CONFIG)),)
+PKG_CONFIG = pkg-config
+endif
+endif
+
+SDL_CFLAGS := $(shell $(PKG_CONFIG) --cflags sdl2 2>/dev/null)
+SDL_LIBS := $(shell $(PKG_CONFIG) --libs sdl2 2>/dev/null)
+ifeq ($(SDL_CFLAGS),)
+SDL_CFLAGS := $(shell $(PKG_CONFIG) --cflags sdl 2>/dev/null)
+SDL_LIBS := $(shell $(PKG_CONFIG) --libs sdl 2>/dev/null)
+endif
+ifeq ($(SDL_CFLAGS),)
+ifneq ($(SYSROOT),)
+SDL_CFLAGS := -I$(SYSROOT)/usr/include/SDL2 -I$(SYSROOT)/usr/include/SDL
+SDL_LIBS := -lSDL2
+endif
+endif
+ifeq ($(SDL_LIBS),)
+SDL_LIBS := -lSDL2
+endif
+
+ARCH_FLAGS = -march=armv5te -mtune=arm926ej-s
+
+OPTIMIZE = -O3 -fomit-frame-pointer -funroll-loops
+
+DEFINES = -D__DINGOO__ -D__MIYOO__ -DRUN_IN_PLACE=1 -DUSE_CMAKE_CONFIG_H \
+          -Dvideo_driver="\"cuckoovideo\"" \
+          -U_IRR_COMPILE_WITH_X11_DEVICE_ -U_IRR_COMPILE_WITH_OPENGL_ \
+          -DNDEBUG -D_GNU_SOURCE -D_DEFAULT_SOURCE
+
+INCLUDES = -Isrc -Isrc/jthread -Isrc/sqlite -Iirrlicht/include $(SDL_CFLAGS)
+
+CXXFLAGS := $(ARCH_FLAGS) $(OPTIMIZE) $(DEFINES) $(INCLUDES) -Wall -pipe -fexceptions -Wno-narrowing
+CFLAGS := $(ARCH_FLAGS) $(OPTIMIZE) $(DEFINES) $(INCLUDES) -Wall -pipe
+LINKFLAGS := $(ARCH_FLAGS) -Lirrlicht/lib/Linux -lIrrlicht $(SDL_LIBS) -lz -lpthread -ldl -lm
+
+COMMON_SRCS = \
+	src/log.cpp \
+	src/content_sao.cpp \
+	src/mapgen.cpp \
+	src/content_inventory.cpp \
+	src/content_nodemeta.cpp \
+	src/content_craft.cpp \
+	src/content_mapnode.cpp \
+	src/auth.cpp \
+	src/collision.cpp \
+	src/nodemetadata.cpp \
+	src/serverobject.cpp \
+	src/noise.cpp \
+	src/mineral.cpp \
+	src/porting.cpp \
+	src/materials.cpp \
+	src/defaultsettings.cpp \
+	src/mapnode.cpp \
+	src/voxel.cpp \
+	src/inventory.cpp \
+	src/debug.cpp \
+	src/serialization.cpp \
+	src/light.cpp \
+	src/filesys.cpp \
+	src/connection.cpp \
+	src/environment.cpp \
+	src/server.cpp \
+	src/servercommand.cpp \
+	src/socket.cpp \
+	src/mapblock.cpp \
+	src/mapsector.cpp \
+	src/map.cpp \
+	src/player.cpp \
+	src/utility.cpp \
+	src/test.cpp \
+	src/sha1.cpp \
+	src/base64.cpp \
+	src/ban.cpp
+
+CLIENT_SRCS = \
+	src/MyBillboardSceneNode.cpp \
+	src/content_mapblock.cpp \
+	src/content_cao.cpp \
+	src/mapblock_mesh.cpp \
+	src/farmesh.cpp \
+	src/keycode.cpp \
+	src/camera.cpp \
+	src/clouds.cpp \
+	src/clientobject.cpp \
+	src/guiMainMenu.cpp \
+	src/guiKeyChangeMenu.cpp \
+	src/guiMessageMenu.cpp \
+	src/guiTextInputMenu.cpp \
+	src/guiInventoryMenu.cpp \
+	src/guiPauseMenu.cpp \
+	src/guiDeathScreen.cpp \
+	src/client.cpp \
+	src/tile.cpp \
+	src/game.cpp \
+	src/main.cpp
+
+JTHREAD_SRCS = \
+	src/jthread/pthread/jmutex.cpp \
+	src/jthread/pthread/jthread.cpp
+
+SQLITE_SRCS = \
+	src/sqlite/sqlite3.c
+
+OBJS = $(COMMON_SRCS:.cpp=.o) $(CLIENT_SRCS:.cpp=.o) $(JTHREAD_SRCS:.cpp=.o) $(SQLITE_SRCS:.c=.o)
+
+IRRLICHT_LIB = irrlicht/lib/Linux/libIrrlicht.a
+
+.PHONY: all miyoo clean execlean distclean
+
+all: miyoo
+
+$(IRRLICHT_LIB):
+	@echo "building Irrlicht for miyoo...
+	mkdir -p irrlicht/lib/Linux
+	$(MAKE) -C irrlicht/source/Irrlicht staticlib \
+		CXX="$(CXX)" CC="$(CC)" AR="$(AR)" \
+		SDL_CFLAGS="$(SDL_CFLAGS)" \
+		CPPFLAGS="$(ARCH_FLAGS) $(OPTIMIZE) $(DEFINES) -I../../include -Izlib -Ijpeglib -Ilibpng $(SDL_CFLAGS) -DIRRLICHT_EXPORTS=1" \
+		CXXFLAGS="$(ARCH_FLAGS) $(OPTIMIZE) $(DEFINES) -Wall -pipe -fexceptions -Wno-narrowing" \
+		CFLAGS="$(ARCH_FLAGS) $(OPTIMIZE) $(DEFINES) -DPNG_THREAD_UNSAFE_OK -DPNG_NO_MMX_CODE -DPNG_NO_MNG_FEATURES"
+
+%.o: %.cpp
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+%.o: %.c
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(EXE_NAME): $(IRRLICHT_LIB) $(OBJS)
+	@echo "linking $(EXE_NAME)"
+	$(CXX) $(OBJS) $(LINKFLAGS) -o $@
+	$(STRIP) $@
+	@echo "$(EXE_NAME) successfully built"
+
+miyoo: $(EXE_NAME)
+
+clean:
+	rm -f $(OBJS)
+	$(MAKE) -C irrlicht/source/Irrlicht clean
+
+execlean:
+	rm -f $(EXE_NAME)
+
+distclean: clean execlean
+	rm -rf $(DISTNAME)
