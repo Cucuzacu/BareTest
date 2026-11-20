@@ -42,7 +42,7 @@
 
 
 #ifdef _MSC_VER
-#pragma comment(lib, "SDL2.lib")
+#pragma comment(lib, "SDL.lib")
 #endif // _MSC_VER
 
 namespace irr

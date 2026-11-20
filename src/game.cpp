@@ -1415,15 +1415,18 @@ void the_game(
 					dy = -dy;
 				//infostream<<"window active, pos difference "<<dx<<","<<dy<<std::endl;
 				
-				f32 keyspeed = 500.0f;
+				f32 keymove = 25.0f;
+				if(g_settings->exists("mouse_sensitivity"))
+					keymove = g_settings->getFloat("mouse_sensitivity");
+
 				if(input->isKeyDown(getKeySetting("keymap_mouseup")))
-					dy -= dtime * keyspeed;
+					dy -= keymove;
 				if(input->isKeyDown(getKeySetting("keymap_mousedown")))
-					dy += dtime * keyspeed;
+					dy += keymove;
 				if(input->isKeyDown(getKeySetting("keymap_mouseleft")))
-					dx -= dtime * keyspeed;
+					dx -= keymove;
 				if(input->isKeyDown(getKeySetting("keymap_mouseright")))
-					dx += dtime * keyspeed;
+					dx += keymove;
 
 				camera_yaw -= dx*0.2;
 				camera_pitch += dy*0.2;

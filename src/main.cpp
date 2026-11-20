@@ -921,26 +921,18 @@ public:
 
 		if(cursor->isVisible() || noMenuActive() == false)
 		{
-			f32 speed = 350.0f;
-			f32 dx = 0.0f;
-			f32 dy = 0.0f;
+			s32 move_x = 0;
+			s32 move_y = 0;
+			const s32 step = 10;
 
 			if(m_receiver->mouse_left)
-				dx -= speed * dtime;
+				move_x -= step;
 			if(m_receiver->mouse_right)
-				dx += speed * dtime;
+				move_x += step;
 			if(m_receiver->mouse_up)
-				dy -= speed * dtime;
+				move_y -= step;
 			if(m_receiver->mouse_down)
-				dy += speed * dtime;
-
-			m_accum_x += dx;
-			m_accum_y += dy;
-
-			s32 move_x = (s32)m_accum_x;
-			s32 move_y = (s32)m_accum_y;
-			m_accum_x -= move_x;
-			m_accum_y -= move_y;
+				move_y += step;
 
 			if(move_x != 0 || move_y != 0)
 			{

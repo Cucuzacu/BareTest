@@ -180,7 +180,7 @@ namespace video
 		video::CImage* CurrentTextureImage;
 		SMaterial Material;
 
-		f32* DepthBuffer;
+		u32* DepthBuffer;
 		u32 DepthBufferSize;
 
 		core::array<STransformedVertex> TransformedVerts;

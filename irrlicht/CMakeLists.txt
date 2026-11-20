@@ -3,7 +3,7 @@ project(Irrlicht C CXX)
 
 set(CMAKE_CXX_STANDARD 11)
 
-set(SDL2_DIR "C:/libs/SDL2/SDL2-2.32.10")
+set(SDL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../lib/SDL-1.2.15")
 
 include_directories(
 	include
@@ -14,10 +14,10 @@ include_directories(
 	source/Irrlicht/bzip2
 	source/Irrlicht/lzma
 	source/Irrlicht/aesGladman
-	"${SDL2_DIR}/include"
+	"${SDL_DIR}/include"
 )
 
-add_definitions(-DIRRLICHT_EXPORTS=1 -D_CRT_SECURE_NO_WARNINGS)
+add_definitions(-DIRRLICHT_EXPORTS=1 -D_CRT_SECURE_NO_WARNINGS -DWINDOWS_IGNORE_PACKING_MISMATCH)
 
 file(GLOB IRRLICHT_CORE_SOURCES
 	"source/Irrlicht/*.cpp"
@@ -145,7 +145,7 @@ add_library(Irrlicht SHARED ${ALL_SOURCES})
 if(WIN32)
 	target_link_libraries(Irrlicht
 		opengl32 glu32 user32 gdi32 advapi32 shell32
-		"${SDL2_DIR}/lib/x86/SDL2.lib"
+		"${SDL_DIR}/lib/x86/SDL.lib"
 	)
 endif()
 
@@ -159,6 +159,6 @@ set_target_properties(Irrlicht PROPERTIES
 
 add_custom_command(TARGET Irrlicht POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
-	"${SDL2_DIR}/lib/x86/SDL2.dll"
-	"${CMAKE_CURRENT_SOURCE_DIR}/bin/Win32-VisualStudio/SDL2.dll"
+	"${SDL_DIR}/lib/x86/SDL.dll"
+	"${CMAKE_CURRENT_SOURCE_DIR}/bin/Win32-VisualStudio/SDL.dll"
 )

@@ -781,9 +781,13 @@ bool COpenGLDriver::endScene()
 #ifdef _IRR_COMPILE_WITH_SDL_DEVICE_
 	if (DeviceType == EIDT_SDL)
 	{
+#if SDL_VERSION_ATLEAST(2,0,0)
 		SDL_Window* curWin = SDL_GL_GetCurrentWindow();
 		if (curWin)
 			SDL_GL_SwapWindow(curWin);
+#else
+		SDL_GL_SwapBuffers();
+#endif
 		return true;
 	}
 #endif

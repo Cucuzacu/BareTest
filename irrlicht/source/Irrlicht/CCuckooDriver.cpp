@@ -22,24 +22,18 @@ inline u32 blendPixel32(u32 src, u32 dst)
 	if (sa == 255) return src;
 	if (sa == 0)   return dst;
 
-	u32 invSa = 255 - sa;
+	u32 invSa = 256 - sa;
+	sa += 1;
 
-	u32 sr = (src >> 16) & 0xFF;
-	u32 sg = (src >> 8)  & 0xFF;
-	u32 sb = src         & 0xFF;
+	u32 s_rb = src & 0x00FF00FF;
+	u32 d_rb = dst & 0x00FF00FF;
+	u32 rb = (((s_rb * sa + d_rb * invSa) >> 8) & 0x00FF00FF);
 
-	u32 dr = (dst >> 16) & 0xFF;
-	u32 dg = (dst >> 8)  & 0xFF;
-	u32 db = dst         & 0xFF;
+	u32 s_g = src & 0x0000FF00;
+	u32 d_g = dst & 0x0000FF00;
+	u32 g = (((s_g * sa + d_g * invSa) >> 8) & 0x0000FF00);
 
-	u32 r = (sr * sa + dr * invSa + 128);
-	r = (r + (r >> 8)) >> 8;
-	u32 g = (sg * sa + dg * invSa + 128);
-	g = (g + (g >> 8)) >> 8;
-	u32 b = (sb * sa + db * invSa + 128);
-	b = (b + (b >> 8)) >> 8;
-
-	return (255 << 24) | (r << 16) | (g << 8) | b;
+	return 0xFF000000 | rb | g;
 }
 
 inline u32 modulateColorFast(u32 c0, u32 c1)
@@ -48,19 +42,19 @@ inline u32 modulateColorFast(u32 c0, u32 c1)
 	if (c0 == 0) return 0;
 
 	u32 rb0 = c0 & 0x00FF00FF;
-	u32 g0  = (c0 >> 8) & 0x000000FF;
-	u32 a0  = (c0 >> 24) & 0x000000FF;
-
 	u32 rb1 = c1 & 0x00FF00FF;
-	u32 g1  = (c1 >> 8) & 0x000000FF;
-	u32 a1  = (c1 >> 24) & 0x000000FF;
-
 	u32 r = ((rb0 >> 16) * (rb1 >> 16) + 128);
 	r = (r + (r >> 8)) >> 8;
 	u32 b = ((rb0 & 0xFF) * (rb1 & 0xFF) + 128);
 	b = (b + (b >> 8)) >> 8;
+
+	u32 g0  = (c0 >> 8) & 0xFF;
+	u32 g1  = (c1 >> 8) & 0xFF;
 	u32 g = (g0 * g1 + 128);
 	g = (g + (g >> 8)) >> 8;
+
+	u32 a0  = (c0 >> 24) & 0xFF;
+	u32 a1  = (c1 >> 24) & 0xFF;
 	u32 a = (a0 * a1 + 128);
 	a = (a + (a >> 8)) >> 8;
 
@@ -222,7 +216,7 @@ void CCuckooDriver::setRenderTargetSurface(video::CImage* image)
 		if (DepthBuffer)
 			delete[] DepthBuffer;
 		DepthBufferSize = neededDepthSize;
-		DepthBuffer = new f32[DepthBufferSize];
+		DepthBuffer = new u32[DepthBufferSize];
 	}
 
 	setViewPort(core::rect<s32>(0, 0, RenderTargetSize.Width, RenderTargetSize.Height));
@@ -290,7 +284,7 @@ void CCuckooDriver::clearZBuffer()
 {
 	if (DepthBuffer && DepthBufferSize > 0)
 	{
-		std::fill(DepthBuffer, DepthBuffer + DepthBufferSize, 1000000.0f);
+		memset(DepthBuffer, 0xFF, DepthBufferSize * sizeof(u32));
 	}
 }
 
@@ -426,8 +420,11 @@ void CCuckooDriver::draw2DRectangle(const core::rect<s32>& pos,
 	if (!dstData) return;
 
 	u32 pitch = RenderTargetSurface->getPitch() / 4;
-	f32 invW = 1.0f / (f32)pos.getWidth();
-	f32 invH = 1.0f / (f32)pos.getHeight();
+	s32 rectW = pos.getWidth();
+	s32 rectH = pos.getHeight();
+	if (rectW <= 0 || rectH <= 0) return;
+
+	f32 invH = 1.0f / (f32)rectH;
 
 	for (s32 y = r.UpperLeftCorner.Y; y < r.LowerRightCorner.Y; ++y)
 	{
@@ -435,12 +432,41 @@ void CCuckooDriver::draw2DRectangle(const core::rect<s32>& pos,
 		SColor colLeft = colorLeftUp.getInterpolated(colorLeftDown, 1.0f - fy);
 		SColor colRight = colorRightUp.getInterpolated(colorRightDown, 1.0f - fy);
 
+		s32 leftR = colLeft.getRed() << 16;
+		s32 leftG = colLeft.getGreen() << 16;
+		s32 leftB = colLeft.getBlue() << 16;
+		s32 leftA = colLeft.getAlpha() << 16;
+
+		s32 rightR = colRight.getRed() << 16;
+		s32 rightG = colRight.getGreen() << 16;
+		s32 rightB = colRight.getBlue() << 16;
+		s32 rightA = colRight.getAlpha() << 16;
+
+		s32 stepR = (rightR - leftR) / rectW;
+		s32 stepG = (rightG - leftG) / rectW;
+		s32 stepB = (rightB - leftB) / rectW;
+		s32 stepA = (rightA - leftA) / rectW;
+
+		s32 offsetX = r.UpperLeftCorner.X - pos.UpperLeftCorner.X;
+		s32 curR = leftR + stepR * offsetX;
+		s32 curG = leftG + stepG * offsetX;
+		s32 curB = leftB + stepB * offsetX;
+		s32 curA = leftA + stepA * offsetX;
+
 		u32* row = dstData + y * pitch;
 		for (s32 x = r.UpperLeftCorner.X; x < r.LowerRightCorner.X; ++x)
 		{
-			f32 fx = (f32)(x - pos.UpperLeftCorner.X) * invW;
-			SColor c = colLeft.getInterpolated(colRight, 1.0f - fx);
-			row[x] = blendPixel32(c.color, row[x]);
+			u32 a = curA >> 16;
+			u32 red = curR >> 16;
+			u32 green = curG >> 16;
+			u32 blue = curB >> 16;
+			u32 c = (a << 24) | (red << 16) | (green << 8) | blue;
+			row[x] = blendPixel32(c, row[x]);
+
+			curR += stepR;
+			curG += stepG;
+			curB += stepB;
+			curA += stepA;
 		}
 	}
 
@@ -612,25 +638,33 @@ void CCuckooDriver::draw2DImage(const video::ITexture* texture,
 		f32 scaleX = (f32)sourceRect.getWidth() / (f32)destRect.getWidth();
 		f32 scaleY = (f32)sourceRect.getHeight() / (f32)destRect.getHeight();
 
+		s32 stepX = (s32)(scaleX * 65536.0f);
+		s32 stepY = (s32)(scaleY * 65536.0f);
+
+		s32 startSrcX = (s32)(((clippedDest.UpperLeftCorner.X - destRect.UpperLeftCorner.X) * scaleX + sourceRect.UpperLeftCorner.X) * 65536.0f);
+		s32 curSrcY = (s32)(((clippedDest.UpperLeftCorner.Y - destRect.UpperLeftCorner.Y) * scaleY + sourceRect.UpperLeftCorner.Y) * 65536.0f);
+
+		s32 maxSrcX = (s32)srcImg->getDimension().Width - 1;
+		s32 maxSrcY = (s32)srcImg->getDimension().Height - 1;
+
 		u32 tintColor = (colors) ? colors[0].color : 0xFFFFFFFF;
 		bool hasTint = (tintColor != 0xFFFFFFFF);
 
 		for (s32 y = clippedDest.UpperLeftCorner.Y; y < clippedDest.LowerRightCorner.Y; ++y)
 		{
-			f32 sy = (f32)(y - destRect.UpperLeftCorner.Y) * scaleY + (f32)sourceRect.UpperLeftCorner.Y;
-			s32 srcY = (s32)sy;
+			s32 srcY = curSrcY >> 16;
 			if (srcY < 0) srcY = 0;
-			if (srcY >= (s32)srcImg->getDimension().Height) srcY = srcImg->getDimension().Height - 1;
+			else if (srcY > maxSrcY) srcY = maxSrcY;
 
 			u32* sRow = srcData + srcY * srcPitch;
 			u32* dRow = dstData + y * dstPitch;
 
+			s32 curSrcX = startSrcX;
 			for (s32 x = clippedDest.UpperLeftCorner.X; x < clippedDest.LowerRightCorner.X; ++x)
 			{
-				f32 sx = (f32)(x - destRect.UpperLeftCorner.X) * scaleX + (f32)sourceRect.UpperLeftCorner.X;
-				s32 srcX = (s32)sx;
+				s32 srcX = curSrcX >> 16;
 				if (srcX < 0) srcX = 0;
-				if (srcX >= (s32)srcImg->getDimension().Width) srcX = srcImg->getDimension().Width - 1;
+				else if (srcX > maxSrcX) srcX = maxSrcX;
 
 				u32 pixel = sRow[srcX];
 				if (hasTint)
@@ -640,7 +674,10 @@ void CCuckooDriver::draw2DImage(const video::ITexture* texture,
 					dRow[x] = blendPixel32(pixel, dRow[x]);
 				else
 					dRow[x] = pixel;
+
+				curSrcX += stepX;
 			}
+			curSrcY += stepY;
 		}
 	}
 
@@ -655,11 +692,11 @@ void CCuckooDriver::draw3DLineTransformed(const STransformedVertex& v0, const ST
 
 	s32 x0 = (s32)v0.x;
 	s32 y0 = (s32)v0.y;
-	f32 z0 = v0.z;
+	u32 z0 = (v0.z >= 0.0f) ? (u32)(v0.z * 16777216.0f) : 0;
 
 	s32 x1 = (s32)v1.x;
 	s32 y1 = (s32)v1.y;
-	f32 z1 = v1.z;
+	u32 z1 = (v1.z >= 0.0f) ? (u32)(v1.z * 16777216.0f) : 0;
 
 	s32 dx = abs(x1 - x0);
 	s32 dy = abs(y1 - y0);
@@ -668,9 +705,8 @@ void CCuckooDriver::draw3DLineTransformed(const STransformedVertex& v0, const ST
 	s32 err = dx - dy;
 
 	s32 steps = std::max(dx, dy);
-	f32 invSteps = steps > 0 ? (1.0f / (f32)steps) : 0.0f;
-	f32 dz = (z1 - z0) * invSteps;
-	f32 curZ = z0;
+	s32 dz = steps > 0 ? (s32)(((long long)z1 - z0) / steps) : 0;
+	u32 curZ = z0;
 
 	u32* dstData = (u32*)RenderTargetSurface->lock();
 	if (!dstData) return;
@@ -681,8 +717,8 @@ void CCuckooDriver::draw3DLineTransformed(const STransformedVertex& v0, const ST
 		if (x0 >= ViewPort.UpperLeftCorner.X && x0 < ViewPort.LowerRightCorner.X &&
 		    y0 >= ViewPort.UpperLeftCorner.Y && y0 < ViewPort.LowerRightCorner.Y)
 		{
-			f32* zPtr = DepthBuffer + y0 * RenderTargetSize.Width + x0;
-			if (curZ <= *zPtr + 0.001f && curZ >= 0.0f)
+			u32* zPtr = DepthBuffer + y0 * RenderTargetSize.Width + x0;
+			if (curZ <= *zPtr + 16777)
 			{
 				dstData[y0 * dstPitch + x0] = blendPixel32(color.color, dstData[y0 * dstPitch + x0]);
 			}
@@ -720,7 +756,16 @@ void CCuckooDriver::draw3DLine(const core::vector3df& start, const core::vector3
 	m.multiplyWith1x4Matrix(p0);
 	m.multiplyWith1x4Matrix(p1);
 
-	if (p0[3] <= 0.001f || p1[3] <= 0.001f)
+	const core::matrix4& proj = TransformationMatrix[ETS_PROJECTION];
+	f32 wNear = 0.1f;
+	if (proj[11] != 0.0f && fabsf(proj[10]) > 0.0001f)
+	{
+		f32 zNear = fabsf(proj[14] / proj[10]);
+		if (zNear > 0.01f && zNear < 5.0f)
+			wNear = zNear;
+	}
+
+	if (p0[3] < wNear || p1[3] < wNear)
 		return;
 
 	f32 invW0 = 1.0f / p0[3];
@@ -750,10 +795,11 @@ CCuckooDriver::STransformedVertex CCuckooDriver::projectClipVertex(
 	s32 midX, s32 midY, s32 halfW, s32 halfH)
 {
 	CCuckooDriver::STransformedVertex tv;
-	tv.invW = 1.0f / cv.w;
+	tv.invW = (cv.w > 0.0001f) ? (1.0f / cv.w) : 10000.0f;
 	tv.x = (f32)midX + (cv.x * tv.invW * (f32)halfW);
 	tv.y = (f32)midY - (cv.y * tv.invW * (f32)halfH);
 	tv.z = cv.z * tv.invW;
+	if (tv.z < 0.0f) tv.z = 0.0f;
 	tv.w = cv.w;
 	tv.u = cv.u * tv.invW;
 	tv.v = cv.v * tv.invW;
@@ -790,20 +836,6 @@ void CCuckooDriver::renderTriangle3D(const STransformedVertex& v0,
                                      u32* dstData, u32 dstPitch,
                                      u32* srcData, u32 texWidth, u32 texHeight, u32 srcPitch)
 {
-	// 2d bounding box
-	s32 minX = (s32)floorf(std::min(v0.x, std::min(v1.x, v2.x)));
-	s32 maxX = (s32)ceilf(std::max(v0.x, std::max(v1.x, v2.x)));
-	s32 minY = (s32)floorf(std::min(v0.y, std::min(v1.y, v2.y)));
-	s32 maxY = (s32)ceilf(std::max(v0.y, std::max(v1.y, v2.y)));
-
-	minX = std::max(minX, ViewPort.UpperLeftCorner.X);
-	maxX = std::min(maxX, ViewPort.LowerRightCorner.X);
-	minY = std::max(minY, ViewPort.UpperLeftCorner.Y);
-	maxY = std::min(maxY, ViewPort.LowerRightCorner.Y);
-
-	if (minX >= maxX || minY >= maxY)
-		return;
-
 	f32 area = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
 	if (Material.BackfaceCulling && area <= 0.0f)
 		return;
@@ -818,25 +850,29 @@ void CCuckooDriver::renderTriangle3D(const STransformedVertex& v0,
 	f32 dw0_dy = (v2.x - v1.x) * invArea;
 	f32 dw1_dx = (v2.y - v0.y) * invArea;
 	f32 dw1_dy = (v0.x - v2.x) * invArea;
-	f32 dw2_dx = -dw0_dx - dw1_dx;
-	f32 dw2_dy = -dw0_dy - dw1_dy;
 
-	f32 dz_dx = dw0_dx * v0.z + dw1_dx * v1.z + dw2_dx * v2.z;
-	f32 dz_dy = dw0_dy * v0.z + dw1_dy * v1.z + dw2_dy * v2.z;
+	f32 dz_dx = dw0_dx * (v0.z - v2.z) + dw1_dx * (v1.z - v2.z);
+	f32 dz_dy = dw0_dy * (v0.z - v2.z) + dw1_dy * (v1.z - v2.z);
 
-	f32 dinvW_dx = dw0_dx * v0.invW + dw1_dx * v1.invW + dw2_dx * v2.invW;
-	f32 dinvW_dy = dw0_dy * v0.invW + dw1_dy * v1.invW + dw2_dy * v2.invW;
+	f32 dinvW_dx = dw0_dx * (v0.invW - v2.invW) + dw1_dx * (v1.invW - v2.invW);
+	f32 dinvW_dy = dw0_dy * (v0.invW - v2.invW) + dw1_dy * (v1.invW - v2.invW);
 
-	f32 dU_dx = dw0_dx * v0.u + dw1_dx * v1.u + dw2_dx * v2.u;
-	f32 dU_dy = dw0_dy * v0.u + dw1_dy * v1.u + dw2_dy * v2.u;
+	f32 dU_dx = dw0_dx * (v0.u - v2.u) + dw1_dx * (v1.u - v2.u);
+	f32 dU_dy = dw0_dy * (v0.u - v2.u) + dw1_dy * (v1.u - v2.u);
 
-	f32 dV_dx = dw0_dx * v0.v + dw1_dx * v1.v + dw2_dx * v2.v;
-	f32 dV_dy = dw0_dy * v0.v + dw1_dy * v1.v + dw2_dy * v2.v;
+	f32 dV_dx = dw0_dx * (v0.v - v2.v) + dw1_dx * (v1.v - v2.v);
+	f32 dV_dy = dw0_dy * (v0.v - v2.v) + dw1_dy * (v1.v - v2.v);
 
 	bool hasTexture = (srcData && texWidth > 0 && texHeight > 0);
 	bool isPow2 = hasTexture && ((texWidth & (texWidth - 1)) == 0) && ((texHeight & (texHeight - 1)) == 0);
 	u32 maskX = texWidth - 1;
 	u32 maskY = texHeight - 1;
+	u32 pitchShift = 0;
+	if (isPow2 && ((srcPitch & (srcPitch - 1)) == 0))
+	{
+		u32 temp = srcPitch;
+		while (temp > 1) { temp >>= 1; pitchShift++; }
+	}
 	f32 fTexWidth = (f32)texWidth;
 	f32 fTexHeight = (f32)texHeight;
 	bool isAlphaTest = (Material.MaterialType == EMT_TRANSPARENT_ALPHA_CHANNEL_REF);
@@ -846,6 +882,8 @@ void CCuckooDriver::renderTriangle3D(const STransformedVertex& v0,
 	bool isFlatColor = (v0.color == v1.color && v1.color == v2.color &&
 	                    v0.lightFactor == v1.lightFactor && v1.lightFactor == v2.lightFactor);
 	u32 flatVertCol = 0xFFFFFFFF;
+	bool isMonoLight = false;
+	u32 monoL = 255;
 	if (isFlatColor)
 	{
 		f32 light = v0.lightFactor;
@@ -857,6 +895,11 @@ void CCuckooDriver::renderTriangle3D(const STransformedVertex& v0,
 		if (g > 255) g = 255;
 		if (b > 255) b = 255;
 		flatVertCol = (a << 24) | (r << 16) | (g << 8) | b;
+		if (flatVertCol != 0xFFFFFFFF && r == g && g == b)
+		{
+			isMonoLight = true;
+			monoL = r;
+		}
 	}
 
 	f32 dr_dx = 0, dr_dy = 0, dg_dx = 0, dg_dy = 0, db_dx = 0, db_dy = 0, da_dx = 0, da_dy = 0;
@@ -876,14 +919,14 @@ void CCuckooDriver::renderTriangle3D(const STransformedVertex& v0,
 		c1a = (f32)v1.color.getAlpha();
 		c2a = (f32)v2.color.getAlpha();
 
-		dr_dx = dw0_dx * c0r + dw1_dx * c1r + dw2_dx * c2r;
-		dr_dy = dw0_dy * c0r + dw1_dy * c1r + dw2_dy * c2r;
-		dg_dx = dw0_dx * c0g + dw1_dx * c1g + dw2_dx * c2g;
-		dg_dy = dw0_dy * c0g + dw1_dy * c1g + dw2_dy * c2g;
-		db_dx = dw0_dx * c0b + dw1_dx * c1b + dw2_dx * c2b;
-		db_dy = dw0_dy * c0b + dw1_dy * c1b + dw2_dy * c2b;
-		da_dx = dw0_dx * c0a + dw1_dx * c1a + dw2_dx * c2a;
-		da_dy = dw0_dy * c0a + dw1_dy * c1a + dw2_dy * c2a;
+		dr_dx = dw0_dx * (c0r - c2r) + dw1_dx * (c1r - c2r);
+		dr_dy = dw0_dy * (c0r - c2r) + dw1_dy * (c1r - c2r);
+		dg_dx = dw0_dx * (c0g - c2g) + dw1_dx * (c1g - c2g);
+		dg_dy = dw0_dy * (c0g - c2g) + dw1_dy * (c1g - c2g);
+		db_dx = dw0_dx * (c0b - c2b) + dw1_dx * (c1b - c2b);
+		db_dy = dw0_dy * (c0b - c2b) + dw1_dy * (c1b - c2b);
+		da_dx = dw0_dx * (c0a - c2a) + dw1_dx * (c1a - c2a);
+		da_dy = dw0_dy * (c0a - c2a) + dw1_dy * (c1a - c2a);
 	}
 
 	bool fogActive = (FogEnable && Material.FogEnable);
@@ -898,156 +941,708 @@ void CCuckooDriver::renderTriangle3D(const STransformedVertex& v0,
 		fogColorBlue = FogColor.getBlue();
 	}
 
-	f32 startX = (f32)minX + 0.5f;
-	f32 startY = (f32)minY + 0.5f;
+	const STransformedVertex* p0 = &v0;
+	const STransformedVertex* p1 = &v1;
+	const STransformedVertex* p2 = &v2;
 
-	f32 row_w0 = ((v1.x - startX) * (v2.y - startY) - (v1.y - startY) * (v2.x - startX)) * invArea;
-	f32 row_w1 = ((v2.x - startX) * (v0.y - startY) - (v2.y - startY) * (v0.x - startX)) * invArea;
+	if (p0->y > p1->y) std::swap(p0, p1);
+	if (p0->y > p2->y) std::swap(p0, p2);
+	if (p1->y > p2->y) std::swap(p1, p2);
 
-	f32 row_z = row_w0 * v0.z + row_w1 * v1.z + (1.0f - row_w0 - row_w1) * v2.z;
-	f32 row_invW = row_w0 * v0.invW + row_w1 * v1.invW + (1.0f - row_w0 - row_w1) * v2.invW;
-	f32 row_U = row_w0 * v0.u + row_w1 * v1.u + (1.0f - row_w0 - row_w1) * v2.u;
-	f32 row_V = row_w0 * v0.v + row_w1 * v1.v + (1.0f - row_w0 - row_w1) * v2.v;
+	s32 yMin = (s32)ceilf(p0->y);
+	s32 yMax = (s32)ceilf(p2->y);
 
-	f32 row_cr = 0, row_cg = 0, row_cb = 0, row_ca = 0;
-	if (!isFlatColor)
+	yMin = std::max(yMin, ViewPort.UpperLeftCorner.Y);
+	yMax = std::min(yMax, ViewPort.LowerRightCorner.Y);
+
+	if (yMin >= yMax)
+		return;
+
+	f32 dy02 = p2->y - p0->y;
+	if (dy02 <= 0.0f)
+		return;
+
+	f32 cross = (p1->x - p0->x) * (p2->y - p0->y) - (p1->y - p0->y) * (p2->x - p0->x);
+	if (cross == 0.0f)
+		return;
+
+	bool longEdgeIsLeft = (cross > 0.0f);
+
+	f32 dx02 = (p2->x - p0->x) / dy02;
+	f32 dy01 = p1->y - p0->y;
+	f32 dx01 = (dy01 > 0.0001f) ? ((p1->x - p0->x) / dy01) : 0.0f;
+	f32 dy12 = p2->y - p1->y;
+	f32 dx12 = (dy12 > 0.0001f) ? ((p2->x - p1->x) / dy12) : 0.0f;
+
+	s32 yMid = (s32)ceilf(p1->y);
+
+	long long cur_xLong = (long long)((p0->x + dx02 * ((f32)yMin + 0.5f - p0->y)) * 65536.0f);
+	long long step_xLong = (long long)(dx02 * 65536.0f);
+
+	long long cur_xShort = (long long)((p0->x + dx01 * ((f32)yMin + 0.5f - p0->y)) * 65536.0f);
+	long long step_xShort = (long long)(dx01 * 65536.0f);
+	bool switchedToBot = false;
+
+	for (s32 y = yMin; y < yMax; ++y)
 	{
-		f32 row_w2 = 1.0f - row_w0 - row_w1;
-		row_cr = row_w0 * c0r + row_w1 * c1r + row_w2 * c2r;
-		row_cg = row_w0 * c0g + row_w1 * c1g + row_w2 * c2g;
-		row_cb = row_w0 * c0b + row_w1 * c1b + row_w2 * c2b;
-		row_ca = row_w0 * c0a + row_w1 * c1a + row_w2 * c2a;
-	}
-
-	for (s32 y = minY; y < maxY; ++y)
-	{
-		u32* dRow = dstData + y * dstPitch;
-		f32* zRow = DepthBuffer + y * RenderTargetSize.Width;
-
-		f32 w0 = row_w0;
-		f32 w1 = row_w1;
-		f32 z = row_z;
-		f32 invW = row_invW;
-		f32 U = row_U;
-		f32 V = row_V;
-
-		f32 cr = row_cr;
-		f32 cg = row_cg;
-		f32 cb = row_cb;
-		f32 ca = row_ca;
-
-		for (s32 x = minX; x < maxX; ++x)
+		if (y >= yMid && !switchedToBot)
 		{
-			f32 w2 = 1.0f - w0 - w1;
+			cur_xShort = (long long)((p1->x + dx12 * ((f32)y + 0.5f - p1->y)) * 65536.0f);
+			step_xShort = (long long)(dx12 * 65536.0f);
+			switchedToBot = true;
+		}
 
-			if (w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f)
+		long long raw_xL = longEdgeIsLeft ? ((cur_xLong + 65535LL) >> 16) : ((cur_xShort + 65535LL) >> 16);
+		long long raw_xR = longEdgeIsLeft ? ((cur_xShort + 65535LL) >> 16) : ((cur_xLong + 65535LL) >> 16);
+
+		cur_xLong += step_xLong;
+		cur_xShort += step_xShort;
+
+		long long clamp_minX = (long long)ViewPort.UpperLeftCorner.X;
+		long long clamp_maxX = (long long)ViewPort.LowerRightCorner.X;
+
+		long long cStartX = std::max(raw_xL, clamp_minX);
+		long long cEndX = std::min(raw_xR, clamp_maxX);
+
+		if (cStartX >= cEndX)
+			continue;
+
+		s32 startX = (s32)cStartX;
+		s32 endX = (s32)cEndX;
+
+		u32* dRow = dstData + y * dstPitch;
+		u32* zRow = DepthBuffer + y * RenderTargetSize.Width;
+
+		f32 dx = (f32)startX + 0.5f - v0.x;
+		f32 dy = (f32)y + 0.5f - v0.y;
+
+		f32 invW = v0.invW + dinvW_dx * dx + dinvW_dy * dy;
+		f32 U = v0.u + dU_dx * dx + dU_dy * dy;
+		f32 V = v0.v + dV_dx * dx + dV_dy * dy;
+		f32 curZ = v0.z + dz_dx * dx + dz_dy * dy;
+		if (curZ < 0.0f) curZ = 0.0f;
+		u32 curZ_fixed = (u32)(curZ * 16777216.0f);
+		s32 dz_dx_fixed = (s32)(dz_dx * 16777216.0f);
+
+		f32 cr = 0, cg = 0, cb = 0, ca = 0;
+		if (!isFlatColor)
+		{
+			cr = c0r + dr_dx * dx + dr_dy * dy;
+			cg = c0g + dg_dx * dx + dg_dy * dy;
+			cb = c0b + db_dx * dx + db_dy * dy;
+			ca = c0a + da_dx * dx + da_dy * dy;
+		}
+
+		s32 x = startX;
+		s32 count = endX - startX;
+
+		f32 W0 = (invW > 1e-7f) ? (1.0f / invW) : 1000000.0f;
+		f32 u_0 = U * W0;
+		f32 v_0 = V * W0;
+
+		while (count > 0)
+		{
+			s32 k = (count >= 16) ? 16 : count;
+			f32 fk = (f32)k;
+
+			f32 invW_next = invW + fk * dinvW_dx;
+			f32 W1 = (invW_next > 1e-7f) ? (1.0f / invW_next) : 1000000.0f;
+
+			f32 U_next = U + fk * dU_dx;
+			f32 V_next = V + fk * dV_dx;
+
+			f32 u_1 = U_next * W1;
+			f32 v_1 = V_next * W1;
+
+			u32* zPtr = zRow + x;
+			u32* dPtr = dRow + x;
+
+			if (hasTexture && isPow2 && !isAlphaTest && !isTransparentMaterial && !fogActive && isFlatColor)
 			{
-				if (z < zRow[x] && z >= 0.0f)
+				s32 u_fix = (s32)(u_0 * fTexWidth * 65536.0f);
+				s32 v_fix = (s32)(v_0 * fTexHeight * 65536.0f);
+				s32 u1_fix = (s32)(u_1 * fTexWidth * 65536.0f);
+				s32 v1_fix = (s32)(v_1 * fTexHeight * 65536.0f);
+
+				s32 du_fix = (k == 16) ? ((u1_fix - u_fix) >> 4) : ((k == 8) ? ((u1_fix - u_fix) >> 3) : ((u1_fix - u_fix) / k));
+				s32 dv_fix = (k == 16) ? ((v1_fix - v_fix) >> 4) : ((k == 8) ? ((v1_fix - v_fix) >> 3) : ((v1_fix - v_fix) / k));
+
+				if (pitchShift != 0)
 				{
-					u32 vertCol = flatVertCol;
-					if (!isFlatColor)
+					if (flatVertCol == 0xFFFFFFFF)
 					{
-						u32 r = (u32)(cr + 0.5f);
-						u32 g = (u32)(cg + 0.5f);
-						u32 b = (u32)(cb + 0.5f);
-						u32 a = (u32)(ca + 0.5f);
-						if (r > 255) r = 255;
-						if (g > 255) g = 255;
-						if (b > 255) b = 255;
-						if (a > 255) a = 255;
-						vertCol = (a << 24) | (r << 16) | (g << 8) | b;
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								if (zWriteEnable) zPtr[i] = curZ_fixed;
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								dPtr[i] = srcData[(ty << pitchShift) + tx];
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+					else if (isMonoLight)
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								if (zWriteEnable) zPtr[i] = curZ_fixed;
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								u32 texColor = srcData[(ty << pitchShift) + tx];
+								u32 rb = (((texColor & 0x00FF00FF) * monoL) >> 8) & 0x00FF00FF;
+								u32 g  = (((texColor & 0x0000FF00) * monoL) >> 8) & 0x0000FF00;
+								dPtr[i] = 0xFF000000 | rb | g;
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+					else
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								if (zWriteEnable) zPtr[i] = curZ_fixed;
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								u32 texColor = srcData[(ty << pitchShift) + tx];
+								dPtr[i] = modulateColorFast(texColor, flatVertCol);
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+				}
+				else
+				{
+					if (flatVertCol == 0xFFFFFFFF)
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								if (zWriteEnable) zPtr[i] = curZ_fixed;
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								dPtr[i] = srcData[ty * srcPitch + tx];
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+					else if (isMonoLight)
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								if (zWriteEnable) zPtr[i] = curZ_fixed;
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								u32 texColor = srcData[ty * srcPitch + tx];
+								u32 rb = (((texColor & 0x00FF00FF) * monoL) >> 8) & 0x00FF00FF;
+								u32 g  = (((texColor & 0x0000FF00) * monoL) >> 8) & 0x0000FF00;
+								dPtr[i] = 0xFF000000 | rb | g;
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+					else
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								if (zWriteEnable) zPtr[i] = curZ_fixed;
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								u32 texColor = srcData[ty * srcPitch + tx];
+								dPtr[i] = modulateColorFast(texColor, flatVertCol);
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+				}
+			}
+			else if (hasTexture && !isPow2 && !isAlphaTest && !isTransparentMaterial && !fogActive && isFlatColor)
+			{
+				s32 u_fix = (s32)(u_0 * 65536.0f);
+				s32 v_fix = (s32)(v_0 * 65536.0f);
+				s32 u1_fix = (s32)(u_1 * 65536.0f);
+				s32 v1_fix = (s32)(v_1 * 65536.0f);
+
+				s32 du_fix = (k == 16) ? ((u1_fix - u_fix) >> 4) : ((k == 8) ? ((u1_fix - u_fix) >> 3) : ((u1_fix - u_fix) / k));
+				s32 dv_fix = (k == 16) ? ((v1_fix - v_fix) >> 4) : ((k == 8) ? ((v1_fix - v_fix) >> 3) : ((v1_fix - v_fix) / k));
+
+				if (flatVertCol == 0xFFFFFFFF)
+				{
+					for (s32 i = 0; i < k; ++i)
+					{
+						if (curZ_fixed < zPtr[i])
+						{
+							if (zWriteEnable) zPtr[i] = curZ_fixed;
+							u32 u_frac = (u32)u_fix & 0xFFFF;
+							u32 v_frac = (u32)v_fix & 0xFFFF;
+							u32 tx = (u_frac * texWidth) >> 16;
+							u32 ty = (v_frac * texHeight) >> 16;
+							dPtr[i] = srcData[ty * srcPitch + tx];
+						}
+						curZ_fixed += dz_dx_fixed;
+						u_fix += du_fix;
+						v_fix += dv_fix;
+					}
+				}
+				else if (isMonoLight)
+				{
+					for (s32 i = 0; i < k; ++i)
+					{
+						if (curZ_fixed < zPtr[i])
+						{
+							if (zWriteEnable) zPtr[i] = curZ_fixed;
+							u32 u_frac = (u32)u_fix & 0xFFFF;
+							u32 v_frac = (u32)v_fix & 0xFFFF;
+							u32 tx = (u_frac * texWidth) >> 16;
+							u32 ty = (v_frac * texHeight) >> 16;
+							u32 texColor = srcData[ty * srcPitch + tx];
+							u32 rb = (((texColor & 0x00FF00FF) * monoL) >> 8) & 0x00FF00FF;
+							u32 g  = (((texColor & 0x0000FF00) * monoL) >> 8) & 0x0000FF00;
+							dPtr[i] = 0xFF000000 | rb | g;
+						}
+						curZ_fixed += dz_dx_fixed;
+						u_fix += du_fix;
+						v_fix += dv_fix;
+					}
+				}
+				else
+				{
+					for (s32 i = 0; i < k; ++i)
+					{
+						if (curZ_fixed < zPtr[i])
+						{
+							if (zWriteEnable) zPtr[i] = curZ_fixed;
+							u32 u_frac = (u32)u_fix & 0xFFFF;
+							u32 v_frac = (u32)v_fix & 0xFFFF;
+							u32 tx = (u_frac * texWidth) >> 16;
+							u32 ty = (v_frac * texHeight) >> 16;
+							u32 texColor = srcData[ty * srcPitch + tx];
+							dPtr[i] = modulateColorFast(texColor, flatVertCol);
+						}
+						curZ_fixed += dz_dx_fixed;
+						u_fix += du_fix;
+						v_fix += dv_fix;
+					}
+				}
+			}
+			else if (hasTexture && isPow2 && isAlphaTest && !isTransparentMaterial && !fogActive && isFlatColor)
+			{
+				s32 u_fix = (s32)(u_0 * fTexWidth * 65536.0f);
+				s32 v_fix = (s32)(v_0 * fTexHeight * 65536.0f);
+				s32 u1_fix = (s32)(u_1 * fTexWidth * 65536.0f);
+				s32 v1_fix = (s32)(v_1 * fTexHeight * 65536.0f);
+
+				s32 du_fix = (k == 16) ? ((u1_fix - u_fix) >> 4) : ((k == 8) ? ((u1_fix - u_fix) >> 3) : ((u1_fix - u_fix) / k));
+				s32 dv_fix = (k == 16) ? ((v1_fix - v_fix) >> 4) : ((k == 8) ? ((v1_fix - v_fix) >> 3) : ((v1_fix - v_fix) / k));
+
+				if (pitchShift != 0)
+				{
+					if (flatVertCol == 0xFFFFFFFF)
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								u32 texColor = srcData[(ty << pitchShift) + tx];
+								if ((texColor >> 24) >= 128)
+								{
+									if (zWriteEnable) zPtr[i] = curZ_fixed;
+									dPtr[i] = texColor;
+								}
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+					else if (isMonoLight)
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								u32 texColor = srcData[(ty << pitchShift) + tx];
+								if ((texColor >> 24) >= 128)
+								{
+									if (zWriteEnable) zPtr[i] = curZ_fixed;
+									u32 rb = (((texColor & 0x00FF00FF) * monoL) >> 8) & 0x00FF00FF;
+									u32 g  = (((texColor & 0x0000FF00) * monoL) >> 8) & 0x0000FF00;
+									dPtr[i] = 0xFF000000 | rb | g;
+								}
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+					else
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								u32 texColor = srcData[(ty << pitchShift) + tx];
+								if ((texColor >> 24) >= 128)
+								{
+									if (zWriteEnable) zPtr[i] = curZ_fixed;
+									dPtr[i] = modulateColorFast(texColor, flatVertCol);
+								}
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+				}
+				else
+				{
+					if (flatVertCol == 0xFFFFFFFF)
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								u32 texColor = srcData[ty * srcPitch + tx];
+								if ((texColor >> 24) >= 128)
+								{
+									if (zWriteEnable) zPtr[i] = curZ_fixed;
+									dPtr[i] = texColor;
+								}
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+					else if (isMonoLight)
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								u32 texColor = srcData[ty * srcPitch + tx];
+								if ((texColor >> 24) >= 128)
+								{
+									if (zWriteEnable) zPtr[i] = curZ_fixed;
+									u32 rb = (((texColor & 0x00FF00FF) * monoL) >> 8) & 0x00FF00FF;
+									u32 g  = (((texColor & 0x0000FF00) * monoL) >> 8) & 0x0000FF00;
+									dPtr[i] = 0xFF000000 | rb | g;
+								}
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+					else
+					{
+						for (s32 i = 0; i < k; ++i)
+						{
+							if (curZ_fixed < zPtr[i])
+							{
+								u32 tx = (u_fix >> 16) & maskX;
+								u32 ty = (v_fix >> 16) & maskY;
+								u32 texColor = srcData[ty * srcPitch + tx];
+								if ((texColor >> 24) >= 128)
+								{
+									if (zWriteEnable) zPtr[i] = curZ_fixed;
+									dPtr[i] = modulateColorFast(texColor, flatVertCol);
+								}
+							}
+							curZ_fixed += dz_dx_fixed;
+							u_fix += du_fix;
+							v_fix += dv_fix;
+						}
+					}
+				}
+			}
+			else if (hasTexture && !isPow2 && isAlphaTest && !isTransparentMaterial && !fogActive && isFlatColor)
+			{
+				s32 u_fix = (s32)(u_0 * 65536.0f);
+				s32 v_fix = (s32)(v_0 * 65536.0f);
+				s32 u1_fix = (s32)(u_1 * 65536.0f);
+				s32 v1_fix = (s32)(v_1 * 65536.0f);
+
+				s32 du_fix = (k == 16) ? ((u1_fix - u_fix) >> 4) : ((k == 8) ? ((u1_fix - u_fix) >> 3) : ((u1_fix - u_fix) / k));
+				s32 dv_fix = (k == 16) ? ((v1_fix - v_fix) >> 4) : ((k == 8) ? ((v1_fix - v_fix) >> 3) : ((v1_fix - v_fix) / k));
+
+				if (flatVertCol == 0xFFFFFFFF)
+				{
+					for (s32 i = 0; i < k; ++i)
+					{
+						if (curZ_fixed < zPtr[i])
+						{
+							u32 u_frac = (u32)u_fix & 0xFFFF;
+							u32 v_frac = (u32)v_fix & 0xFFFF;
+							u32 tx = (u_frac * texWidth) >> 16;
+							u32 ty = (v_frac * texHeight) >> 16;
+							u32 texColor = srcData[ty * srcPitch + tx];
+
+							if ((texColor >> 24) >= 128)
+							{
+								if (zWriteEnable) zPtr[i] = curZ_fixed;
+								dPtr[i] = texColor;
+							}
+						}
+						curZ_fixed += dz_dx_fixed;
+						u_fix += du_fix;
+						v_fix += dv_fix;
+					}
+				}
+				else if (isMonoLight)
+				{
+					for (s32 i = 0; i < k; ++i)
+					{
+						if (curZ_fixed < zPtr[i])
+						{
+							u32 u_frac = (u32)u_fix & 0xFFFF;
+							u32 v_frac = (u32)v_fix & 0xFFFF;
+							u32 tx = (u_frac * texWidth) >> 16;
+							u32 ty = (v_frac * texHeight) >> 16;
+							u32 texColor = srcData[ty * srcPitch + tx];
+
+							if ((texColor >> 24) >= 128)
+							{
+								if (zWriteEnable) zPtr[i] = curZ_fixed;
+								u32 rb = (((texColor & 0x00FF00FF) * monoL) >> 8) & 0x00FF00FF;
+								u32 g  = (((texColor & 0x0000FF00) * monoL) >> 8) & 0x0000FF00;
+								dPtr[i] = 0xFF000000 | rb | g;
+							}
+						}
+						curZ_fixed += dz_dx_fixed;
+						u_fix += du_fix;
+						v_fix += dv_fix;
+					}
+				}
+				else
+				{
+					for (s32 i = 0; i < k; ++i)
+					{
+						if (curZ_fixed < zPtr[i])
+						{
+							u32 u_frac = (u32)u_fix & 0xFFFF;
+							u32 v_frac = (u32)v_fix & 0xFFFF;
+							u32 tx = (u_frac * texWidth) >> 16;
+							u32 ty = (v_frac * texHeight) >> 16;
+							u32 texColor = srcData[ty * srcPitch + tx];
+
+							if ((texColor >> 24) >= 128)
+							{
+								if (zWriteEnable) zPtr[i] = curZ_fixed;
+								dPtr[i] = modulateColorFast(texColor, flatVertCol);
+							}
+						}
+						curZ_fixed += dz_dx_fixed;
+						u_fix += du_fix;
+						v_fix += dv_fix;
+					}
+				}
+			}
+			else if (!hasTexture && !fogActive && isFlatColor)
+			{
+				for (s32 i = 0; i < k; ++i)
+				{
+					if (curZ_fixed < zPtr[i])
+					{
+						if (zWriteEnable)
+							zPtr[i] = curZ_fixed;
+
+						if (isTransparentMaterial || ((flatVertCol >> 24) & 0xFF) < 255)
+							dPtr[i] = blendPixel32(flatVertCol, dPtr[i]);
+						else
+							dPtr[i] = flatVertCol;
+					}
+					curZ_fixed += dz_dx_fixed;
+				}
+			}
+			else
+			{
+				s32 u_fix = 0, v_fix = 0, du_fix = 0, dv_fix = 0;
+				if (hasTexture)
+				{
+					if (isPow2)
+					{
+						u_fix = (s32)(u_0 * fTexWidth * 65536.0f);
+						v_fix = (s32)(v_0 * fTexHeight * 65536.0f);
+						s32 u1_fix = (s32)(u_1 * fTexWidth * 65536.0f);
+						s32 v1_fix = (s32)(v_1 * fTexHeight * 65536.0f);
+						du_fix = (k == 16) ? ((u1_fix - u_fix) >> 4) : ((k == 8) ? ((u1_fix - u_fix) >> 3) : ((u1_fix - u_fix) / k));
+						dv_fix = (k == 16) ? ((v1_fix - v_fix) >> 4) : ((k == 8) ? ((v1_fix - v_fix) >> 3) : ((v1_fix - v_fix) / k));
+					}
+					else
+					{
+						u_fix = (s32)(u_0 * 65536.0f);
+						v_fix = (s32)(v_0 * 65536.0f);
+						s32 u1_fix = (s32)(u_1 * 65536.0f);
+						s32 v1_fix = (s32)(v_1 * 65536.0f);
+						du_fix = (k == 16) ? ((u1_fix - u_fix) >> 4) : ((k == 8) ? ((u1_fix - u_fix) >> 3) : ((u1_fix - u_fix) / k));
+						dv_fix = (k == 16) ? ((v1_fix - v_fix) >> 4) : ((k == 8) ? ((v1_fix - v_fix) >> 3) : ((v1_fix - v_fix) / k));
+					}
+				}
+
+				s32 cr_fix = 0, cg_fix = 0, cb_fix = 0, ca_fix = 0;
+				s32 dcr_fix = 0, dcg_fix = 0, dcb_fix = 0, dca_fix = 0;
+				if (!isFlatColor)
+				{
+					cr_fix = (s32)(cr * 256.0f);
+					cg_fix = (s32)(cg * 256.0f);
+					cb_fix = (s32)(cb * 256.0f);
+					ca_fix = (s32)(ca * 256.0f);
+					f32 cr_next = cr + fk * dr_dx;
+					f32 cg_next = cg + fk * dg_dx;
+					f32 cb_next = cb + fk * db_dx;
+					f32 ca_next = ca + fk * da_dx;
+					dcr_fix = (k == 16) ? (((s32)(cr_next * 256.0f) - cr_fix) >> 4) : ((k == 8) ? (((s32)(cr_next * 256.0f) - cr_fix) >> 3) : (((s32)(cr_next * 256.0f) - cr_fix) / k));
+					dcg_fix = (k == 16) ? (((s32)(cg_next * 256.0f) - cg_fix) >> 4) : ((k == 8) ? (((s32)(cg_next * 256.0f) - cg_fix) >> 3) : (((s32)(cg_next * 256.0f) - cg_fix) / k));
+					dcb_fix = (k == 16) ? (((s32)(cb_next * 256.0f) - cb_fix) >> 4) : ((k == 8) ? (((s32)(cb_next * 256.0f) - cb_fix) >> 3) : (((s32)(cb_next * 256.0f) - cb_fix) / k));
+					dca_fix = (k == 16) ? (((s32)(ca_next * 256.0f) - ca_fix) >> 4) : ((k == 8) ? (((s32)(ca_next * 256.0f) - ca_fix) >> 3) : (((s32)(ca_next * 256.0f) - ca_fix) / k));
+					cr = cr_next;
+					cg = cg_next;
+					cb = cb_next;
+					ca = ca_next;
+				}
+
+				s32 fog0_fix = 0, dfog_fix = 0;
+				if (fogActive)
+				{
+					f32 fog0 = (FogEnd - W0) * invFogRange;
+					if (fog0 < 0.0f) fog0 = 0.0f; else if (fog0 > 1.0f) fog0 = 1.0f;
+					fog0_fix = (s32)(fog0 * 256.0f);
+
+					f32 fog1 = (FogEnd - W1) * invFogRange;
+					if (fog1 < 0.0f) fog1 = 0.0f; else if (fog1 > 1.0f) fog1 = 1.0f;
+					s32 fog1_fix = (s32)(fog1 * 256.0f);
+					dfog_fix = (k == 16) ? ((fog1_fix - fog0_fix) >> 4) : ((k == 8) ? ((fog1_fix - fog0_fix) >> 3) : ((fog1_fix - fog0_fix) / k));
+				}
+
+				for (s32 i = 0; i < k; ++i)
+				{
+					if (curZ_fixed < zPtr[i])
+					{
+						u32 vertCol = flatVertCol;
+						if (!isFlatColor)
+						{
+							u32 r = (cr_fix < 0) ? 0 : ((cr_fix > 65280) ? 255 : (u32)(cr_fix >> 8));
+							u32 g = (cg_fix < 0) ? 0 : ((cg_fix > 65280) ? 255 : (u32)(cg_fix >> 8));
+							u32 b = (cb_fix < 0) ? 0 : ((cb_fix > 65280) ? 255 : (u32)(cb_fix >> 8));
+							u32 a = (ca_fix < 0) ? 0 : ((ca_fix > 65280) ? 255 : (u32)(ca_fix >> 8));
+							vertCol = (a << 24) | (r << 16) | (g << 8) | b;
+						}
+
+						u32 pixel = vertCol;
+						if (hasTexture)
+						{
+							u32 tx, ty;
+							if (isPow2)
+							{
+								tx = (u_fix >> 16) & maskX;
+								ty = (v_fix >> 16) & maskY;
+							}
+							else
+							{
+								u32 u_frac = (u32)u_fix & 0xFFFF;
+								u32 v_frac = (u32)v_fix & 0xFFFF;
+								tx = (u_frac * texWidth) >> 16;
+								ty = (v_frac * texHeight) >> 16;
+							}
+
+							u32 texColor = srcData[ty * srcPitch + tx];
+							if (isAlphaTest && ((texColor >> 24) & 0xFF) < 128)
+							{
+								goto next_generic_pixel;
+							}
+
+							if (vertCol == 0xFFFFFFFF)
+								pixel = texColor;
+							else
+								pixel = modulateColorFast(texColor, vertCol);
+						}
+
+						if (zWriteEnable)
+							zPtr[i] = curZ_fixed;
+
+						if (fogActive)
+						{
+							u32 fFact = (fog0_fix < 0) ? 0 : ((fog0_fix > 256) ? 256 : (u32)fog0_fix);
+							u32 invF = 256 - fFact;
+							u32 pr = (pixel >> 16) & 0xFF;
+							u32 pg = (pixel >> 8)  & 0xFF;
+							u32 pb = pixel         & 0xFF;
+
+							u32 fr = (pr * fFact + fogColorRed   * invF + 128) >> 8;
+							u32 fg = (pg * fFact + fogColorGreen * invF + 128) >> 8;
+							u32 fb = (pb * fFact + fogColorBlue  * invF + 128) >> 8;
+
+							pixel = (pixel & 0xFF000000) | (fr << 16) | (fg << 8) | fb;
+						}
+
+						if (isTransparentMaterial || ((pixel >> 24) & 0xFF) < 255)
+							dPtr[i] = blendPixel32(pixel, dPtr[i]);
+						else
+							dPtr[i] = pixel;
 					}
 
-					u32 pixel = vertCol;
-
+next_generic_pixel:
+					curZ_fixed += dz_dx_fixed;
 					if (hasTexture)
 					{
-						f32 recipW = (invW != 0.0f) ? (1.0f / invW) : 1.0f;
-						f32 fu = U * recipW * fTexWidth;
-						f32 fv = V * recipW * fTexHeight;
-						s32 tx = (s32)floorf(fu);
-						s32 ty = (s32)floorf(fv);
-
-						if (isPow2)
-						{
-							tx &= maskX;
-							ty &= maskY;
-						}
-						else
-						{
-							tx = (tx % (s32)texWidth + (s32)texWidth) % (s32)texWidth;
-							ty = (ty % (s32)texHeight + (s32)texHeight) % (s32)texHeight;
-						}
-
-						u32 texColor = srcData[ty * srcPitch + tx];
-
-						if (isAlphaTest && ((texColor >> 24) & 0xFF) < 128)
-						{
-							goto step_pixel;
-						}
-
-						if (vertCol == 0xFFFFFFFF)
-							pixel = texColor;
-						else
-							pixel = modulateColorFast(texColor, vertCol);
+						u_fix += du_fix;
+						v_fix += dv_fix;
 					}
-
-					if (zWriteEnable)
-						zRow[x] = z;
-
+					if (!isFlatColor)
+					{
+						cr_fix += dcr_fix;
+						cg_fix += dcg_fix;
+						cb_fix += dcb_fix;
+						ca_fix += dca_fix;
+					}
 					if (fogActive)
 					{
-						f32 recipW = (invW != 0.0f) ? (1.0f / invW) : 1.0f;
-						f32 fogFactor = (FogEnd - recipW) * invFogRange;
-						if (fogFactor < 0.0f) fogFactor = 0.0f;
-						else if (fogFactor > 1.0f) fogFactor = 1.0f;
-
-						u32 pr = (pixel >> 16) & 0xFF;
-						u32 pg = (pixel >> 8)  & 0xFF;
-						u32 pb = pixel         & 0xFF;
-
-						u32 fr = (u32)(pr * fogFactor + fogColorRed   * (1.0f - fogFactor) + 0.5f);
-						u32 fg = (u32)(pg * fogFactor + fogColorGreen * (1.0f - fogFactor) + 0.5f);
-						u32 fb = (u32)(pb * fogFactor + fogColorBlue  * (1.0f - fogFactor) + 0.5f);
-
-						pixel = (pixel & 0xFF000000) | (fr << 16) | (fg << 8) | fb;
+						fog0_fix += dfog_fix;
 					}
-
-					if (isTransparentMaterial || ((pixel >> 24) & 0xFF) < 255)
-						dRow[x] = blendPixel32(pixel, dRow[x]);
-					else
-						dRow[x] = pixel;
 				}
 			}
 
-step_pixel:
-			w0 += dw0_dx;
-			w1 += dw1_dx;
-			z += dz_dx;
-			invW += dinvW_dx;
-			U += dU_dx;
-			V += dV_dx;
-			if (!isFlatColor)
-			{
-				cr += dr_dx;
-				cg += dg_dx;
-				cb += db_dx;
-				ca += da_dx;
-			}
-		}
-
-		row_w0 += dw0_dy;
-		row_w1 += dw1_dy;
-		row_z += dz_dy;
-		row_invW += dinvW_dy;
-		row_U += dU_dy;
-		row_V += dV_dy;
-		if (!isFlatColor)
-		{
-			row_cr += dr_dy;
-			row_cg += dg_dy;
-			row_cb += db_dy;
-			row_ca += da_dy;
+			invW = invW_next;
+			U = U_next;
+			V = V_next;
+			W0 = W1;
+			u_0 = u_1;
+			v_0 = v_1;
+			x += k;
+			count -= k;
 		}
 	}
 }
@@ -1070,6 +1665,15 @@ void CCuckooDriver::drawVertexPrimitiveList(const void* vertices, u32 vertexCoun
 	s32 halfH = ViewPort.getHeight() / 2;
 	s32 midX = ViewPort.UpperLeftCorner.X + halfW;
 	s32 midY = ViewPort.UpperLeftCorner.Y + halfH;
+
+	const core::matrix4& proj = TransformationMatrix[ETS_PROJECTION];
+	f32 wNear = 0.1f;
+	if (proj[11] != 0.0f && fabsf(proj[10]) > 0.0001f)
+	{
+		f32 zNear = fabsf(proj[14] / proj[10]);
+		if (zNear > 0.01f && zNear < 5.0f)
+			wNear = zNear;
+	}
 
 	if (TransformedVerts.allocated_size() < vertexCount)
 		TransformedVerts.reallocate(vertexCount);
@@ -1146,15 +1750,14 @@ void CCuckooDriver::drawVertexPrimitiveList(const void* vertices, u32 vertexCoun
 			}
 		}
 
-		m.multiplyWith1x4Matrix(pos);
-
-		cv.x = pos[0];
-		cv.y = pos[1];
-		cv.z = pos[2];
-		cv.w = pos[3];
+		f32 px = pos[0], py = pos[1], pz = pos[2];
+		cv.x = px * m[0] + py * m[4] + pz * m[8]  + m[12];
+		cv.y = px * m[1] + py * m[5] + pz * m[9]  + m[13];
+		cv.z = px * m[2] + py * m[6] + pz * m[10] + m[14];
+		cv.w = px * m[3] + py * m[7] + pz * m[11] + m[15];
 		ClipVerts[i] = cv;
 
-		if (pos[3] > 0.001f)
+		if (cv.w >= wNear)
 		{
 			TransformedVerts[i] = projectClipVertex(cv, midX, midY, halfW, halfH);
 		}
@@ -1193,15 +1796,36 @@ void CCuckooDriver::drawVertexPrimitiveList(const void* vertices, u32 vertexCoun
 			const SClipVertex& c1 = ClipVerts[idx1];
 			const SClipVertex& c2 = ClipVerts[idx2];
 
-			bool in0 = (c0.w > 0.001f);
-			bool in1 = (c1.w > 0.001f);
-			bool in2 = (c2.w > 0.001f);
+			bool in0 = (c0.w >= wNear);
+			bool in1 = (c1.w >= wNear);
+			bool in2 = (c2.w >= wNear);
 
 			int inCount = (in0 ? 1 : 0) + (in1 ? 1 : 0) + (in2 ? 1 : 0);
 
 			if (inCount == 3)
 			{
-				renderTriangle3D(TransformedVerts[idx0], TransformedVerts[idx1], TransformedVerts[idx2],
+				const STransformedVertex& tv0 = TransformedVerts[idx0];
+				const STransformedVertex& tv1 = TransformedVerts[idx1];
+				const STransformedVertex& tv2 = TransformedVerts[idx2];
+
+				f32 area = (tv1.x - tv0.x) * (tv2.y - tv0.y) - (tv1.y - tv0.y) * (tv2.x - tv0.x);
+				if (Material.BackfaceCulling && area <= 0.0f)
+					continue;
+				if (Material.FrontfaceCulling && area >= 0.0f)
+					continue;
+				if (fabsf(area) < 0.0001f)
+					continue;
+
+				f32 minX = std::min(tv0.x, std::min(tv1.x, tv2.x));
+				f32 maxX = std::max(tv0.x, std::max(tv1.x, tv2.x));
+				f32 minY = std::min(tv0.y, std::min(tv1.y, tv2.y));
+				f32 maxY = std::max(tv0.y, std::max(tv1.y, tv2.y));
+
+				if (maxX < (f32)ViewPort.UpperLeftCorner.X || minX >= (f32)ViewPort.LowerRightCorner.X ||
+				    maxY < (f32)ViewPort.UpperLeftCorner.Y || minY >= (f32)ViewPort.LowerRightCorner.Y)
+					continue;
+
+				renderTriangle3D(tv0, tv1, tv2,
 				                 dstData, dstPitch, srcData, texWidth, texHeight, srcPitch);
 			}
 			else if (inCount == 1)
@@ -1213,12 +1837,29 @@ void CCuckooDriver::drawVertexPrimitiveList(const void* vertices, u32 vertexCoun
 				else if (in1) { vA = &c1; vB = &c2; vC = &c0; }
 				else          { vA = &c2; vB = &c0; vC = &c1; }
 
-				SClipVertex i0 = clipEdge(*vA, *vB, 0.001f);
-				SClipVertex i1 = clipEdge(*vA, *vC, 0.001f);
+				SClipVertex i0 = clipEdge(*vA, *vB, wNear);
+				SClipVertex i1 = clipEdge(*vA, *vC, wNear);
 
 				STransformedVertex tA = projectClipVertex(*vA, midX, midY, halfW, halfH);
 				STransformedVertex t0 = projectClipVertex(i0, midX, midY, halfW, halfH);
 				STransformedVertex t1 = projectClipVertex(i1, midX, midY, halfW, halfH);
+
+				f32 area = (t0.x - tA.x) * (t1.y - tA.y) - (t0.y - tA.y) * (t1.x - tA.x);
+				if (Material.BackfaceCulling && area <= 0.0f)
+					continue;
+				if (Material.FrontfaceCulling && area >= 0.0f)
+					continue;
+				if (fabsf(area) < 0.0001f)
+					continue;
+
+				f32 minX = std::min(tA.x, std::min(t0.x, t1.x));
+				f32 maxX = std::max(tA.x, std::max(t0.x, t1.x));
+				f32 minY = std::min(tA.y, std::min(t0.y, t1.y));
+				f32 maxY = std::max(tA.y, std::max(t0.y, t1.y));
+
+				if (maxX < (f32)ViewPort.UpperLeftCorner.X || minX >= (f32)ViewPort.LowerRightCorner.X ||
+				    maxY < (f32)ViewPort.UpperLeftCorner.Y || minY >= (f32)ViewPort.LowerRightCorner.Y)
+					continue;
 
 				renderTriangle3D(tA, t0, t1,
 				                 dstData, dstPitch, srcData, texWidth, texHeight, srcPitch);
@@ -1232,18 +1873,55 @@ void CCuckooDriver::drawVertexPrimitiveList(const void* vertices, u32 vertexCoun
 				else if (!in0) { vA = &c1; vB = &c2; vC = &c0; }
 				else           { vA = &c2; vB = &c0; vC = &c1; }
 
-				SClipVertex i0 = clipEdge(*vB, *vC, 0.001f);
-				SClipVertex i1 = clipEdge(*vA, *vC, 0.001f);
+				SClipVertex i0 = clipEdge(*vB, *vC, wNear);
+				SClipVertex i1 = clipEdge(*vA, *vC, wNear);
 
 				STransformedVertex tA = projectClipVertex(*vA, midX, midY, halfW, halfH);
 				STransformedVertex tB = projectClipVertex(*vB, midX, midY, halfW, halfH);
 				STransformedVertex t0 = projectClipVertex(i0, midX, midY, halfW, halfH);
 				STransformedVertex t1 = projectClipVertex(i1, midX, midY, halfW, halfH);
 
-				renderTriangle3D(tA, tB, t0,
-				                 dstData, dstPitch, srcData, texWidth, texHeight, srcPitch);
-				renderTriangle3D(tA, t0, t1,
-				                 dstData, dstPitch, srcData, texWidth, texHeight, srcPitch);
+				f32 area1 = (tB.x - tA.x) * (t0.y - tA.y) - (tB.y - tA.y) * (t0.x - tA.x);
+				bool draw1 = true;
+				if (Material.BackfaceCulling && area1 <= 0.0f) draw1 = false;
+				else if (Material.FrontfaceCulling && area1 >= 0.0f) draw1 = false;
+				else if (fabsf(area1) < 0.0001f) draw1 = false;
+				else
+				{
+					f32 minX = std::min(tA.x, std::min(tB.x, t0.x));
+					f32 maxX = std::max(tA.x, std::max(tB.x, t0.x));
+					f32 minY = std::min(tA.y, std::min(tB.y, t0.y));
+					f32 maxY = std::max(tA.y, std::max(tB.y, t0.y));
+					if (maxX < (f32)ViewPort.UpperLeftCorner.X || minX >= (f32)ViewPort.LowerRightCorner.X ||
+					    maxY < (f32)ViewPort.UpperLeftCorner.Y || minY >= (f32)ViewPort.LowerRightCorner.Y)
+						draw1 = false;
+				}
+				if (draw1)
+				{
+					renderTriangle3D(tA, tB, t0,
+					                 dstData, dstPitch, srcData, texWidth, texHeight, srcPitch);
+				}
+
+				f32 area2 = (t0.x - tA.x) * (t1.y - tA.y) - (t0.y - tA.y) * (t1.x - tA.x);
+				bool draw2 = true;
+				if (Material.BackfaceCulling && area2 <= 0.0f) draw2 = false;
+				else if (Material.FrontfaceCulling && area2 >= 0.0f) draw2 = false;
+				else if (fabsf(area2) < 0.0001f) draw2 = false;
+				else
+				{
+					f32 minX = std::min(tA.x, std::min(t0.x, t1.x));
+					f32 maxX = std::max(tA.x, std::max(t0.x, t1.x));
+					f32 minY = std::min(tA.y, std::min(t0.y, t1.y));
+					f32 maxY = std::max(tA.y, std::max(t0.y, t1.y));
+					if (maxX < (f32)ViewPort.UpperLeftCorner.X || minX >= (f32)ViewPort.LowerRightCorner.X ||
+					    maxY < (f32)ViewPort.UpperLeftCorner.Y || minY >= (f32)ViewPort.LowerRightCorner.Y)
+						draw2 = false;
+				}
+				if (draw2)
+				{
+					renderTriangle3D(tA, t0, t1,
+					                 dstData, dstPitch, srcData, texWidth, texHeight, srcPitch);
+				}
 			}
 		}
 	}
@@ -1257,8 +1935,8 @@ void CCuckooDriver::drawVertexPrimitiveList(const void* vertices, u32 vertexCoun
 			const SClipVertex& c0 = ClipVerts[idx0];
 			const SClipVertex& c1 = ClipVerts[idx1];
 
-			bool in0 = (c0.w > 0.001f);
-			bool in1 = (c1.w > 0.001f);
+			bool in0 = (c0.w >= wNear);
+			bool in1 = (c1.w >= wNear);
 
 			if (in0 && in1)
 			{
@@ -1266,13 +1944,13 @@ void CCuckooDriver::drawVertexPrimitiveList(const void* vertices, u32 vertexCoun
 			}
 			else if (in0 && !in1)
 			{
-				SClipVertex i1 = clipEdge(c0, c1, 0.001f);
+				SClipVertex i1 = clipEdge(c0, c1, wNear);
 				STransformedVertex t1 = projectClipVertex(i1, midX, midY, halfW, halfH);
 				draw3DLineTransformed(TransformedVerts[idx0], t1, c0.color);
 			}
 			else if (!in0 && in1)
 			{
-				SClipVertex i0 = clipEdge(c1, c0, 0.001f);
+				SClipVertex i0 = clipEdge(c1, c0, wNear);
 				STransformedVertex t0 = projectClipVertex(i0, midX, midY, halfW, halfH);
 				draw3DLineTransformed(t0, TransformedVerts[idx1], c1.color);
 			}
